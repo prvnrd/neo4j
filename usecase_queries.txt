@@ -1,3 +1,23 @@
+Transit planner view
+--------------------
+MATCH path = (r:Route {route_id: "1-ABY-mjp-2"})<-[:PART_OF_TRIP]-(t:Trip)-[:HAS_STOP_TIME]->(st:StopTime)-[:AT_STOP]->(s:Stop)​
+RETURN path LIMIT 100
+
+Operations view
+---------------
+MATCH path = (a:Agency)-[:OPERATES]->(r:Route)<-[:PART_OF_TRIP]-(t:Trip)-[:HAS_STOP_TIME]->(st:StopTime) 
+WITH path 
+LIMIT 100 
+RETURN path​
+
+Passengers view 
+----------------
+MATCH path = (s1:Stop)-[:AT_STOP]-(st1:StopTime)-[:HAS_STOP_TIME]-(t:Trip)-[:HAS_STOP_TIME]-(st2:StopTime)-[:AT_STOP]-(s2:Stop)​
+RETURN path 
+LIMIT 100
+
+
+
 Use case 1 - Hub station analysis
 ----------------------------------
 
