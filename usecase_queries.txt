@@ -1,0 +1,141 @@
+Use case 1 - Hub station analysis
+----------------------------------
+
+// 1. First create the graph projection that models station connections through trips
+// Drop any existing projection first
+CALL gds.graph.drop('transit_network', false);
+
+// Create new projection based on sequential stops in trips
+CALL gds.graph.project.cypher(
+    'transit_network',
+    'MATCH (s:Stop) RETURN id(s) AS id',
+    'MATCH (t:Trip)
+     MATCH (s1:Stop)-[:AT_STOP]-(st1:StopTime)-[:HAS_STOP_TIME]-(t)
+     MATCH (s2:Stop)-[:AT_STOP]-(st2:StopTime)-[:HAS_STOP_TIME]-(t)
+     WHERE s1 <> s2 
+     AND st1.stop_sequence < st2.stop_sequence
+     RETURN DISTINCT id(s1) AS source, 
+            id(s2) AS target, 
+            1.0 AS weight'
+);
+
+// 2. Run the betweenness centrality analysis with relative importance calculation
+CALL gds.betweenness.stream('transit_network')
+YIELD nodeId, score
+WITH collect({nodeId: nodeId, score: score}) as scores,
+     max(score) as max_score
+UNWIND scores as row
+MATCH (s:Stop)
+WHERE id(s) = row.nodeId
+RETURN 
+    s.name as station_name,
+    s.stop_id as stop_id,
+    row.score as centrality_score,
+    round(100.0 * row.score/max_score, 2) as relative_importance
+ORDER BY row.score DESC
+LIMIT 20;
+
+// 3. Cleanup
+CALL gds.graph.drop('transit_network');
+
+---------
+
+// Visualize complete path including Trips and StopTimes for top hubs
+MATCH path = (s1:Stop)-[:AT_STOP]-(st1:StopTime)-[:HAS_STOP_TIME]-(t:Trip)-[:HAS_STOP_TIME]-(st2:StopTime)-[:AT_STOP]-(s2:Stop)
+WHERE s1.stop_id IN ["20836", "2463", "82", "7739"]  // Our top hubs
+AND s1 <> s2
+AND st1.stop_sequence < st2.stop_sequence
+RETURN path
+LIMIT 25;
+
+Use case 2 - Rush Hour Route Load Analysis
+----------------------------------
+// Drop any existing projection
+CALL gds.graph.drop('rush_hour_network', false);
+
+// Create a graph projection focusing on rush hour connections
+CALL gds.graph.project.cypher(
+    'rush_hour_network',
+    'MATCH (s:Stop) RETURN id(s) AS id',
+    'MATCH (s1:Stop)-[:AT_STOP]-(st1:StopTime)-[:HAS_STOP_TIME]-(t:Trip)-[:HAS_STOP_TIME]-(st2:StopTime)-[:AT_STOP]-(s2:Stop)
+     WHERE s1 <> s2 
+     AND st1.stop_sequence < st2.stop_sequence
+     AND st1.departure_time_int >= 25200 // 7 AM (7*3600)
+     AND st1.departure_time_int <= 32400 // 9 AM (9*3600)
+     RETURN DISTINCT id(s1) AS source, 
+            id(s2) AS target,
+            count(*) AS weight'
+);
+
+// Show community analysis
+CALL gds.louvain.stream('rush_hour_network')
+YIELD nodeId, communityId
+MATCH (s:Stop)
+WHERE id(s) = nodeId
+WITH communityId, collect(s.name) as stations
+WHERE size(stations) >= 3
+RETURN 
+    communityId,
+    size(stations) as community_size,
+    stations[0..3] as sample_stations
+ORDER BY community_size DESC
+LIMIT 5;
+
+// Visualize rush hour communities with their connections
+MATCH path = (s1:Stop)-[:AT_STOP]-(st1:StopTime)-[:HAS_STOP_TIME]-(t:Trip)-[:HAS_STOP_TIME]-(st2:StopTime)-[:AT_STOP]-(s2:Stop)
+WHERE st1.departure_time_int >= 25200  // 7 AM
+  AND st1.departure_time_int <= 32400  // 9 AM
+  AND s1 <> s2
+  AND st1.stop_sequence < st2.stop_sequence
+  AND s1.name IN ["Evans St/Bridge St (Port Melbourne)", 
+                  "Rex St/Taylors Rd (Kings Park)",
+                  "45-Glenferrie Rd/Wattletree Rd (Malvern)",
+                  "Bells Bvd/Great Ocean Rd (Jan Juc)"]
+RETURN path
+LIMIT 50;
+
+
+Use case 3 - 10-Minute Neighborhood Analysis 
+----------------------------------
+
+// Drop any existing projection
+CALL gds.graph.drop('neighborhood_network', false);
+
+// Create a graph projection with travel times as weights
+CALL gds.graph.project.cypher(
+    'neighborhood_network',
+    'MATCH (s:Stop) RETURN id(s) AS id',
+    'MATCH (s1:Stop)-[:AT_STOP]-(st1:StopTime)-[:HAS_STOP_TIME]-(t:Trip)-[:HAS_STOP_TIME]-(st2:StopTime)-[:AT_STOP]-(s2:Stop)
+     WHERE s1 <> s2 
+     AND st1.stop_sequence < st2.stop_sequence
+     RETURN DISTINCT 
+     id(s1) AS source, 
+     id(s2) AS target,
+     abs(st2.arrival_time_int - st1.departure_time_int) as weight'
+);
+
+
+// More efficient 10-minute neighborhood analysis
+MATCH (source:Stop {name: 'Southern Cross Coach Terminal/Spencer St (Melbourne City)'})-[:AT_STOP]-(st1:StopTime)
+WITH source, st1
+MATCH path = (st1)-[:HAS_STOP_TIME]-(t:Trip)-[:HAS_STOP_TIME]-(st2:StopTime)-[:AT_STOP]-(target:Stop)
+WHERE source <> target
+  AND abs(st2.arrival_time_int - st1.departure_time_int) <= 600  // 10 minutes in seconds
+RETURN DISTINCT
+    target.name as reachable_station,
+    min(abs(st2.arrival_time_int - st1.departure_time_int))/60 as travel_time_minutes
+ORDER BY travel_time_minutes
+LIMIT 15;
+
+
+
+// Visualize 10-minute neighborhood connections
+MATCH (source:Stop {name: 'Southern Cross Coach Terminal/Spencer St (Melbourne City)'})-[:AT_STOP]-(st1:StopTime)
+WITH source, st1
+MATCH path = (source)-[:AT_STOP]-(st1)-[:HAS_STOP_TIME]-(t:Trip)-[:HAS_STOP_TIME]-(st2:StopTime)-[:AT_STOP]-(target:Stop)
+WHERE source <> target
+  AND abs(st2.arrival_time_int - st1.departure_time_int) <= 600
+RETURN path
+LIMIT 25;
+
+
